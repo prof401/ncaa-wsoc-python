@@ -1,29 +1,27 @@
 """HTTP session and headers for NCAA stats requests."""
 
 import requests
-
-# Minimal headers sufficient to avoid 406/403 - User-Agent and Referer are critical
-DEFAULT_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://stats.ncaa.org/rankings/",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "same-origin",
-}
+from curl_cffi.requests import Session as CurlSession
 
 
 def create_session(headers: dict | None = None) -> requests.Session:
     """
-    Create a session with headers and optional initial visit to establish cookies.
+    Create a curl_cffi Session with Chrome 131 impersonation to bypass Akamai
+    bot detection via TLS/HTTP2 fingerprint spoofing.
 
-    Some sites require a prior visit before serving the target page.
+    curl_cffi sets its own browser-matching headers (UA, Accept, Sec-Fetch-*)
+    automatically when default_headers=True (the default). We only add Referer
+    to establish session context, since that's not set by the impersonation.
     """
-    sess = requests.Session()
-    sess.headers.update(headers or DEFAULT_HEADERS)
+    sess = CurlSession(impersonate="chrome131", default_headers=True)
+    # Only add Referer — do NOT override UA or Sec-Fetch headers that
+    # curl_cffi sets automatically to match the Chrome 131 fingerprint
+    extra = headers or {"Referer": "https://stats.ncaa.org/"}
+    sess.headers.update(extra)
+
     try:
         sess.get("https://stats.ncaa.org/rankings/", timeout=10)
-    except requests.RequestException:
+    except Exception:
         pass
+
     return sess

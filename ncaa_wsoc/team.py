@@ -1,17 +1,53 @@
 """TeamProcessor: fetch team page, extract metadata and schedule."""
 
 import re
+import time
 from typing import Any
-
 import requests
 from bs4 import BeautifulSoup
 
 TEAM_BASE_URL = "https://stats.ncaa.org/teams/"
 
+_INTERSTITIAL_SIGNAL = "/_sec/verify?provider=interstitial"
+_VERIFY_URL = "https://stats.ncaa.org/_sec/verify?provider=interstitial"
+
+
+def _solve_interstitial(session: requests.Session, html: str, team_url: str) -> bool:
+    """
+    Solve Akamai Bot Manager interstitial PoW challenge.
+
+    Extracts the bm-verify token and PoW values from the challenge HTML,
+    POSTs the answer to /_sec/verify, and updates session cookies.
+    Returns True if the POST succeeded (status < 400).
+    """
+    i_match = re.search(r"var i = (\d+);", html)
+    pow_match = re.search(r'Number\("(\d+)" \+ "(\d+)"\)', html)
+    token_match = re.search(
+        r'xhr\.send\(JSON\.stringify\(\{"bm-verify": "([^"]+)"', html
+    )
+
+    if not (i_match and pow_match and token_match):
+        return False
+
+    i_val = int(i_match.group(1))
+    pow_val = i_val + int(pow_match.group(1) + pow_match.group(2))
+    token = token_match.group(1)
+
+    try:
+        resp = session.post(
+            _VERIFY_URL,
+            json={"bm-verify": token, "pow": pow_val},
+            headers={"Content-Type": "application/json", "Referer": team_url},
+            timeout=15,
+        )
+        return resp.status_code < 400
+    except Exception:
+        return False
+
 
 def fetch_team_page(session: requests.Session, team_id: str) -> str:
     """
-    Fetch the team page HTML.
+    Fetch the team page HTML, solving Akamai interstitial challenge if encountered.
 
     Args:
         session: Requests session with headers and cookies.
@@ -22,6 +58,13 @@ def fetch_team_page(session: requests.Session, team_id: str) -> str:
     """
     url = f"{TEAM_BASE_URL}{team_id}"
     resp = session.get(url, timeout=30)
+
+    if _INTERSTITIAL_SIGNAL in resp.text:
+        solved = _solve_interstitial(session, resp.text, url)
+        if solved:
+            time.sleep(1)
+            resp = session.get(url, timeout=30)
+
     resp.raise_for_status()
     return resp.text
 
@@ -30,7 +73,12 @@ def extract_team_metadata(
     soup: BeautifulSoup, team_id: str, season: str | None = None, division: int = 1
 ) -> dict[str, Any]:
     """
-    Extract team metadata from the team page.
+    Extract team metadata from the NCAA stats team page.
+
+    Page structure (confirmed from live HTML):
+      - Team name: <a target="ATHLETICS_URL"> inside .card-header
+      - Season: selected <option> in <select id="year_list">
+      - Coach: .card-header text=="Coach" -> sibling .card-body -> first <dd> <a>
 
     Args:
         soup: Parsed team page HTML.
@@ -50,49 +98,33 @@ def extract_team_metadata(
         "division": division,
     }
 
-    # Team name: often in h1, or in page title, or in a heading
-    h1 = soup.find("h1")
-    if h1:
-        result["name"] = h1.get_text(strip=True)
+    # Team name: <a target="ATHLETICS_URL">Utah Tech Trailblazers</a>
+    athletics_link = soup.find("a", target="ATHLETICS_URL")
+    if athletics_link:
+        result["name"] = athletics_link.get_text(strip=True)
 
-    # Fallback: look for common patterns
-    if not result["name"]:
-        for tag in soup.find_all(["h2", "h3", "span"], class_=True):
-            text = tag.get_text(strip=True)
-            if text and len(text) < 100 and not text.startswith("http"):
-                result["name"] = text
-                break
-
-    # Coach: often in a block with "Head Coach" or "Coach"
-    for text in soup.stripped_strings:
-        if "head coach" in text.lower() or "coach:" in text.lower():
-            # Next sibling or nearby might be the name
-            pass
-    # Look for table or div with coach info
-    for row in soup.find_all("tr"):
-        cells = row.find_all(["th", "td"])
-        if len(cells) >= 2:
-            label = cells[0].get_text(strip=True).lower()
-            if "coach" in label:
-                result["coach"] = cells[1].get_text(strip=True)
-                break
-
-    # Conference: similar pattern
-    for row in soup.find_all("tr"):
-        cells = row.find_all(["th", "td"])
-        if len(cells) >= 2:
-            label = cells[0].get_text(strip=True).lower()
-            if "conference" in label or "conf" in label:
-                result["conference"] = cells[1].get_text(strip=True)
-                break
-
-    # Season: from dropdown or page context
+    # Season: selected option in <select id="year_list">
     if not result["season"]:
-        sel = soup.find("select", {"id": re.compile(r"year|season", re.I)})
-        if sel:
-            opt = sel.find("option", selected=True) or sel.find("option")
+        year_sel = soup.find("select", id="year_list")
+        if year_sel:
+            opt = year_sel.find("option", selected=True) or year_sel.find("option")
             if opt:
                 result["season"] = opt.get_text(strip=True)
+
+    # Coach: card-header "Coach" -> card-body -> first dd (contains <a>Name</a>)
+    for header in soup.find_all(class_="card-header"):
+        if header.get_text(strip=True) == "Coach":
+            card_body = header.find_next_sibling(class_="card-body")
+            if card_body:
+                name_dd = card_body.find("dd")
+                if name_dd:
+                    coach_link = name_dd.find("a")
+                    result["coach"] = (
+                        coach_link.get_text(strip=True)
+                        if coach_link
+                        else name_dd.get_text(strip=True)
+                    )
+            break
 
     return result
 

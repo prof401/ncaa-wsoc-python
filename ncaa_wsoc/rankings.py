@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 
-from .http import DEFAULT_HEADERS, create_session
+from .http import create_session
 
 CHANGE_SPORT_URL = "https://stats.ncaa.org/rankings/change_sport_year_div"
 
@@ -73,17 +73,16 @@ def fetch_rankings_page(
         season: Calendar year (e.g., 2024).
         division: NCAA division (1, 2, or 3).
         stat_seq: Stat type (60 = Winning Percentage per requirements).
-        headers: Optional override; defaults to DEFAULT_HEADERS.
+        headers: Optional extra headers to pass to create_session.
         session: Optional requests.Session for connection reuse.
 
     Returns:
         Response from national_ranking (team list). Caller should check raise_for_status().
     """
     entry_url = build_rankings_url(season, division)
-    req_headers = headers or DEFAULT_HEADERS
 
     if session is None:
-        session = create_session(req_headers)
+        session = create_session(headers)
 
     resp1 = session.get(entry_url, timeout=30)
     resp1.raise_for_status()

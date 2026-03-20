@@ -22,7 +22,7 @@
 
 ### Table 2: `contests.csv`
 
-Canceled games (any schedule row whose cells indicate a cancellation) are omitted.
+Schedule rows without a `/contests/<id>` link (canceled games, other unplayed games, or incomplete rows) are omitted.
 
 | Column | Description |
 | :--- | :--- |

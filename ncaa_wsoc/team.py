@@ -232,19 +232,6 @@ def extract_team_metadata(
     return result
 
 
-# Match cancel / canceled / cancelled / canceling / cancellation in schedule cells
-_CANCELLED_RE = re.compile(r"\bcancel(?:led|ed|ing|lation)?\b", re.I)
-
-
-def _row_is_canceled_game(cells: list[Any]) -> bool:
-    """True if the schedule row represents a canceled/postponement-canceled game."""
-    for cell in cells:
-        text = cell.get_text(" ", strip=True)
-        if _CANCELLED_RE.search(text):
-            return True
-    return False
-
-
 def extract_contests(soup: BeautifulSoup, team_id: str) -> list[dict[str, Any]]:
     """
     Extract contests from the Schedule/Results table.
@@ -329,11 +316,8 @@ def extract_contests(soup: BeautifulSoup, team_id: str) -> list[dict[str, Any]]:
                     strip=True
                 )
 
-            if _row_is_canceled_game(cells):
-                continue
-
-            # Only add if we have meaningful data
-            if contest["date"] or contest["opponent_id"] or contest["result"]:
+            # Omit rows with no contest page link (canceled, unplayed, malformed rows)
+            if contest["contest_id"]:
                 contests.append(contest)
 
         if contests:

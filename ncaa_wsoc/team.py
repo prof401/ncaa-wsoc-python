@@ -3,6 +3,8 @@
 import re
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlparse
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -177,6 +179,38 @@ def _is_coach_section_header(header_text: str) -> bool:
     return t in ("coach", "coaches")
 
 
+def extract_division_from_ranking_summary(
+    soup: BeautifulSoup, sport_code: str = "WSO"
+) -> int | None:
+    """
+    NCAA team pages link to ranking_summary with division=1.0|2.0|3.0.
+
+    Prefer the link for this scraper's sport_code when multiple exist.
+    """
+    any_div: int | None = None
+    for a in soup.find_all("a", href=True):
+        href = str(a["href"])
+        if "ranking_summary" not in href:
+            continue
+        parsed = urlparse(href)
+        qs = parse_qs(parsed.query)
+        raw = (qs.get("division") or [None])[0]
+        if raw is None:
+            continue
+        try:
+            d = int(float(raw))
+        except (TypeError, ValueError):
+            continue
+        if d not in (1, 2, 3):
+            continue
+        sc = (qs.get("sport_code") or [""])[0].upper()
+        if sc == sport_code.upper():
+            return d
+        if any_div is None:
+            any_div = d
+    return any_div
+
+
 def extract_team_metadata(
     soup: BeautifulSoup, team_id: str, season: str | None = None, division: int = 1
 ) -> dict[str, Any]:
@@ -195,7 +229,7 @@ def extract_team_metadata(
         soup: Parsed team page HTML.
         team_id: NCAA team ID.
         season: Academic year string (e.g., "2023-24"). Inferred from page if None.
-        division: NCAA division (1, 2, or 3).
+        division: Fallback NCAA division if the page has no ranking_summary link.
 
     Returns:
         Dict with team_id, name, coach, season, overall_record, division.
@@ -208,6 +242,10 @@ def extract_team_metadata(
         "overall_record": "",
         "division": division,
     }
+
+    page_division = extract_division_from_ranking_summary(soup)
+    if page_division is not None:
+        result["division"] = page_division
 
     result["name"] = _extract_team_name(soup)
 

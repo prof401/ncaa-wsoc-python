@@ -11,6 +11,26 @@ from .http import create_session
 
 CHANGE_SPORT_URL = "https://stats.ncaa.org/rankings/change_sport_year_div"
 
+# Trailing "(10-2-3)" style record on rankings — keep full link text.
+_RANKINGS_RECORD_IN_PARENS = re.compile(
+    r"^\d+\s*-\s*\d+(?:\s*-\s*\d+)?$"
+)
+
+
+def _strip_rankings_conference_suffix(link_text: str) -> str:
+    """
+    Rankings links often look like 'School (Conference)'. Drop the conference
+    segment; keep trailing parens when they look like a W-L record.
+    """
+    text = (link_text or "").strip()
+    m = re.match(r"^(.*)\s+\(([^)]+)\)\s*$", text)
+    if not m:
+        return text
+    inner = m.group(2).strip()
+    if _RANKINGS_RECORD_IN_PARENS.match(inner):
+        return text
+    return m.group(1).strip()
+
 
 def build_rankings_url(season: int, division: int = 3) -> str:
     """
@@ -97,6 +117,38 @@ def fetch_rankings_page(
     return resp2
 
 
+def extract_team_seed_entries(html: str) -> list[tuple[str, str]]:
+    """
+    Extract team IDs and display names from the rankings page.
+
+    For each team link, the display name is the link text with a trailing
+    conference in parentheses removed (see _strip_rankings_conference_suffix).
+    First occurrence of each team_id in document order wins; results are sorted
+    by team_id.
+
+    Args:
+        html: Raw HTML from the rankings page.
+
+    Returns:
+        List of (team_id, display_name) pairs.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    seen: dict[str, str] = {}
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        match = re.search(r"/teams/(\d+)", href)
+        if not match:
+            continue
+        tid = match.group(1)
+        if tid in seen:
+            continue
+        raw = link.get_text(" ", strip=True)
+        seen[tid] = _strip_rankings_conference_suffix(raw)
+
+    return sorted(seen.items(), key=lambda x: x[0])
+
+
 def extract_team_ids(html: str) -> list[str]:
     """
     Extract Team IDs from the rankings page HTML.
@@ -109,16 +161,7 @@ def extract_team_ids(html: str) -> list[str]:
     Returns:
         List of unique Team IDs (strings).
     """
-    soup = BeautifulSoup(html, "html.parser")
-    team_ids = set()
-
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        match = re.search(r"/teams/(\d+)", href)
-        if match:
-            team_ids.add(match.group(1))
-
-    return sorted(team_ids)
+    return [tid for tid, _ in extract_team_seed_entries(html)]
 
 
 def get_team_ids_for_season(
@@ -145,3 +188,31 @@ def get_team_ids_for_season(
     resp = fetch_rankings_page(season, division, session=session)
     resp.raise_for_status()
     return extract_team_ids(resp.text)
+
+
+def get_team_seed_entries_for_season(
+    season: int,
+    division: int = 3,
+    delay_seconds: float = 1.0,
+    session: requests.Session | None = None,
+) -> list[tuple[str, str]]:
+    """
+    Fetch the rankings page and return (team_id, display_name) for each seed team.
+
+    Display names omit the conference suffix used on the rankings page.
+
+    Args:
+        season: Calendar year (e.g., 2024).
+        division: NCAA division (1, 2, or 3).
+        delay_seconds: Optional delay before request (rate limiting).
+        session: Optional session for connection reuse (uses create_session if None).
+
+    Returns:
+        List of (team_id, display_name) sorted by team_id.
+    """
+    time.sleep(delay_seconds)
+    if session is None:
+        session = create_session()
+    resp = fetch_rankings_page(season, division, session=session)
+    resp.raise_for_status()
+    return extract_team_seed_entries(resp.text)

@@ -239,8 +239,59 @@ def extract_division_from_ranking_summary(
     return any_div
 
 
+def _parse_team_history_org_id(href: str) -> str:
+    """
+    NCAA Team History URLs use either ?org_id=… or a path ending in …/WSO/<org_id>
+    (or other sport code). Return the numeric org id, or "" if not found.
+    """
+    href = href.replace("&amp;", "&").strip()
+    if not href:
+        return ""
+    parsed = urlparse(href)
+    qs = parse_qs(parsed.query)
+    raw = (qs.get("org_id") or [None])[0]
+    if raw is not None and str(raw).strip().isdigit():
+        return str(raw).strip()
+    path = (parsed.path or "").rstrip("/")
+    if not path:
+        return ""
+    parts = [p for p in path.split("/") if p]
+    if parts and parts[-1].isdigit():
+        return parts[-1]
+    return ""
+
+
+def _extract_team_history_org_id(soup: BeautifulSoup, sport_code: str = "WSO") -> str:
+    """
+    Find the Team History link on a team page and parse the org id (stable across
+    seasons for the same school/sport).
+    """
+    candidates: list[Any] = []
+    for a in soup.find_all("a", href=True):
+        href = str(a.get("href") or "")
+        if "/teams/history" not in href.lower():
+            continue
+        text = (a.get_text() or "").strip().lower()
+        if "team history" in text or sport_code.lower() in href.lower():
+            candidates.append(a)
+    search_order = candidates if candidates else [
+        a
+        for a in soup.find_all("a", href=True)
+        if "/teams/history" in str(a.get("href") or "").lower()
+    ]
+    for a in search_order:
+        oid = _parse_team_history_org_id(str(a.get("href") or ""))
+        if oid:
+            return oid
+    return ""
+
+
 def extract_team_metadata(
-    soup: BeautifulSoup, team_id: str, season: str | None = None, division: int = 3
+    soup: BeautifulSoup,
+    team_id: str,
+    season: str | None = None,
+    division: int = 3,
+    name_hint: str | None = None,
 ) -> dict[str, Any]:
     """
     Extract team metadata from the NCAA stats team page.
@@ -253,15 +304,18 @@ def extract_team_metadata(
       - Season: selected <option> in <select id="year_list">
       - Coach: .card-header text=="Coach" -> sibling .card-body -> <dd> rows;
         first linked name (multiple rows when coaching changed mid-season)
+      - org_id: from the Team History link (same across seasons for a program)
 
     Args:
         soup: Parsed team page HTML.
         team_id: NCAA team ID.
         season: Academic year string (e.g., "2023-24"). Inferred from page if None.
         division: Fallback NCAA division if the page has no ranking_summary link (default 3).
+        name_hint: Optional name from the seed/discovery link; when non-empty, used as
+            the team ``name`` written to teams.csv (page-extracted name is ignored).
 
     Returns:
-        Dict with team_id, name, coach, season, overall_record, division.
+        Dict with team_id, name, coach, season, overall_record, division, org_id.
     """
     result: dict[str, Any] = {
         "team_id": team_id,
@@ -270,13 +324,16 @@ def extract_team_metadata(
         "season": season or "",
         "overall_record": "",
         "division": division,
+        "org_id": "",
     }
 
     page_division = extract_division_from_ranking_summary(soup)
     if page_division is not None:
         result["division"] = page_division
 
-    result["name"] = _extract_team_name(soup)
+    name_from_page = _extract_team_name(soup)
+    hint = name_hint.strip() if name_hint else ""
+    result["name"] = hint if hint else name_from_page
 
     # Season: selected option in <select id="year_list">
     if not result["season"]:
@@ -295,6 +352,7 @@ def extract_team_metadata(
             break
 
     result["overall_record"] = _extract_overall_record(soup)
+    result["org_id"] = _extract_team_history_org_id(soup)
 
     return result
 
@@ -346,6 +404,7 @@ def extract_contests(soup: BeautifulSoup, team_id: str) -> list[dict[str, Any]]:
                 "contest_id": "",
                 "team_id": team_id,
                 "opponent_id": "",
+                "opponent_name": "",
                 "result": "",
                 "attendance": "",
                 "date": "",
@@ -363,6 +422,7 @@ def extract_contests(soup: BeautifulSoup, team_id: str) -> list[dict[str, Any]]:
                     match = re.search(r"/teams/(\d+)", opp_link.get("href", ""))
                     if match:
                         contest["opponent_id"] = match.group(1)
+                        contest["opponent_name"] = opp_link.get_text(" ", strip=True)
 
             # Result: W 2-1, L 1-0, etc.
             if "result" in col_map and col_map["result"] < len(cells):

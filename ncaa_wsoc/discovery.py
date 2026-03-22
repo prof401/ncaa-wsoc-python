@@ -15,14 +15,15 @@ class DiscoveryManager:
             known_ids: Initial set of team IDs already known (from seed + existing CSV).
         """
         self._known: set[str] = set(known_ids or ())
-        self._queue: deque[str] = deque()
+        self._queue: deque[tuple[str, str | None]] = deque()
 
-    def add_if_new(self, team_id: str) -> bool:
+    def add_if_new(self, team_id: str, name_hint: str | None = None) -> bool:
         """
         Add team_id to the discovery queue if not already known.
 
         Args:
             team_id: NCAA team ID.
+            name_hint: Optional display name from the link text (e.g. schedule opponent).
 
         Returns:
             True if newly added to queue, False if already known.
@@ -32,28 +33,32 @@ class DiscoveryManager:
         if team_id in self._known:
             return False
         self._known.add(team_id)
-        self._queue.append(team_id)
+        hint = name_hint.strip() if name_hint else None
+        self._queue.append((team_id, hint or None))
         return True
 
-    def add_seed_ids(self, team_ids: list[str]) -> None:
+    def add_seed_ids(self, entries: list[tuple[str, str | None]]) -> None:
         """
         Add seed team IDs to the queue (all are "new" for processing).
         Marks them as known so they won't be re-added from opponent discovery.
 
         Args:
-            team_ids: List of team IDs from rankings seed.
+            entries: (team_id, display_name) pairs from the rankings seed.
         """
-        for tid in team_ids:
-            if tid and tid not in self._known:
-                self._known.add(tid)
-                self._queue.append(tid)
+        for tid, name_hint in entries:
+            tid = (tid or "").strip()
+            if not tid or tid in self._known:
+                continue
+            self._known.add(tid)
+            hint = name_hint.strip() if name_hint else None
+            self._queue.append((tid, hint or None))
 
-    def pop_next(self) -> str | None:
+    def pop_next(self) -> tuple[str, str | None] | None:
         """
-        Pop the next team ID from the queue.
+        Pop the next queued team.
 
         Returns:
-            Team ID, or None if queue is empty.
+            (team_id, name_hint) where name_hint may be None, or None if empty.
         """
         if not self._queue:
             return None

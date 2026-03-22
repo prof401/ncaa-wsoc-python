@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from .discovery import DiscoveryManager
 from .http import create_session
-from .rankings import build_rankings_url, get_team_ids_for_season
+from .rankings import build_rankings_url, get_team_seed_entries_for_season
 from .storage import append_contest, append_team, load_known_team_ids
 from .team import extract_contests, extract_team_metadata, fetch_team_page
 
@@ -45,19 +45,20 @@ def run(
 
     print(f"Fetching D{division} rankings for {season} season...")
     session = create_session()
-    team_ids = get_team_ids_for_season(season, division, session=session)
-    print(f"Seed: {len(team_ids)} team IDs")
+    seed_entries = get_team_seed_entries_for_season(season, division, session=session)
+    print(f"Seed: {len(seed_entries)} team IDs")
 
     known = load_known_team_ids(teams_path)
     discovery = DiscoveryManager(known_ids=known)
-    discovery.add_seed_ids(team_ids)
+    discovery.add_seed_ids(seed_entries)
     print(f"Queue: {len(discovery)} teams to process (known: {len(known)})")
 
     processed = 0
     while not discovery.is_empty() and (limit is None or processed < limit):
-        team_id = discovery.pop_next()
-        if not team_id:
+        popped = discovery.pop_next()
+        if not popped:
             break
+        team_id, name_hint = popped
 
         time.sleep(delay_seconds)
         try:
@@ -68,8 +69,15 @@ def run(
 
         soup = BeautifulSoup(html, "html.parser")
 
+        if not (name_hint or "").strip():
+            print(
+                f"  Team {team_id}: no name hint; using page extraction for name."
+            )
+
         # Metadata
-        meta = extract_team_metadata(soup, team_id, division=division)
+        meta = extract_team_metadata(
+            soup, team_id, division=division, name_hint=name_hint
+        )
         meta["season"] = meta.get("season") or f"{season}-{str(season + 1)[-2:]}"
         appended = append_team(meta, teams_path)
         if appended:
@@ -80,7 +88,10 @@ def run(
         for c in contests:
             append_contest(c, contests_path)
             if c.get("opponent_id"):
-                discovery.add_if_new(c["opponent_id"])
+                discovery.add_if_new(
+                    c["opponent_id"],
+                    c.get("opponent_name") or None,
+                )
 
         processed += 1
         if processed % 10 == 0:

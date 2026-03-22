@@ -7,7 +7,15 @@ from typing import Any
 TEAMS_CSV = "teams.csv"
 CONTESTS_CSV = "contests.csv"
 
-TEAMS_COLUMNS = ["team_id", "name", "season", "division", "coach", "overall_record"]
+TEAMS_COLUMNS = [
+    "team_id",
+    "name",
+    "season",
+    "division",
+    "coach",
+    "overall_record",
+    "org_id",
+]
 CONTESTS_COLUMNS = ["contest_id", "team_id", "opponent_id", "result", "attendance", "date"]
 
 

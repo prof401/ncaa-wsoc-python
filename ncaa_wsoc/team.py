@@ -118,6 +118,27 @@ def _short_name_from_header(header: Any) -> str:
     return alt
 
 
+# Banner line when NCAA still shows "School Mascot (W-L)" but removed ATHLETICS_URL / logo.
+_RECORD_SUFFIX_IN_PARENS = re.compile(
+    r"\s*\(\s*\d+\s*-\s*\d+(?:\s*-\s*\d+)?\s*\)\s*$"
+)
+
+
+def _team_name_from_banner_card_header(soup: BeautifulSoup) -> str:
+    """
+    Some team pages omit the athletics link and header logo; schedule logos are
+    in table cells, not .card-header. The first summary card-header is often
+    still 'Nickname (W-L)' or 'School (W-L)'.
+    """
+    for header in soup.find_all("div", class_="card-header"):
+        text = header.get_text(" ", strip=True)
+        if not text:
+            continue
+        if _RECORD_SUFFIX_IN_PARENS.search(text):
+            return _RECORD_SUFFIX_IN_PARENS.sub("", text).strip()
+    return ""
+
+
 def _extract_team_name(soup: BeautifulSoup) -> str:
     """
     Short team name: NCAA almost always puts it in the banner logo alt next to
@@ -128,6 +149,9 @@ def _extract_team_name(soup: BeautifulSoup) -> str:
       2. Text of that athletics link (often longer; used only if alt missing)
       3. Heuristic: first early .card-header with logo_image (rare if markup
          changes).
+      4. First .card-header whose text ends with a (W-L) or (W-L-T) record —
+         name is the text before that parenthesis (covers pages with no
+         ATHLETICS_URL and no banner logo).
     """
     athletics = soup.find("a", target="ATHLETICS_URL")
 
@@ -148,6 +172,10 @@ def _extract_team_name(soup: BeautifulSoup) -> str:
         alt = _short_name_from_header(ch)
         if alt:
             return alt
+
+    banner = _team_name_from_banner_card_header(soup)
+    if banner:
+        return banner
 
     return ""
 
@@ -220,7 +248,8 @@ def extract_team_metadata(
     Page structure (confirmed from live HTML):
       - Team name (short): <img class="logo_image" alt="…"> in the .card-header
         that contains <a target="ATHLETICS_URL">; else that link's text; else
-        rare heuristic: first early .card-header with a logo_image
+        rare heuristic: first early .card-header with a logo_image; else first
+        .card-header like "School (W-L)" when the banner link/logo is absent
       - Season: selected <option> in <select id="year_list">
       - Coach: .card-header text=="Coach" -> sibling .card-body -> <dd> rows;
         first linked name (multiple rows when coaching changed mid-season)

@@ -1,6 +1,7 @@
 """HTTP session and headers for NCAA stats requests."""
 
 import re
+import sys
 import time
 
 import requests
@@ -8,6 +9,62 @@ from curl_cffi.requests import Session as CurlSession
 
 _INTERSTITIAL_SIGNAL = "/_sec/verify?provider=interstitial"
 _VERIFY_URL = "https://stats.ncaa.org/_sec/verify?provider=interstitial"
+
+# Abort after this many consecutive URLs that return HTTP 500 (after one retry each).
+STATS_CONSECUTIVE_FAILURE_ABORT = 4
+
+
+class ConsecutiveHttpFailures(Exception):
+    """Raised when too many consecutive stats.ncaa.org requests fail with HTTP 500."""
+
+
+class _ConsecutiveFailureTracker:
+    def __init__(self, abort_at: int = STATS_CONSECUTIVE_FAILURE_ABORT) -> None:
+        self.count = 0
+        self.abort_at = abort_at
+
+    def record_success(self) -> None:
+        self.count = 0
+
+    def record_failure(self) -> None:
+        self.count += 1
+        if self.count >= self.abort_at:
+            raise ConsecutiveHttpFailures(
+                f"Aborting: {self.count} consecutive stats.ncaa.org URLs returned "
+                f"HTTP 500 after one retry each (limit {self.abort_at})."
+            )
+
+
+def _tracker(session: requests.Session) -> _ConsecutiveFailureTracker:
+    if not hasattr(session, "_ncaa_stats_failure_tracker"):
+        session._ncaa_stats_failure_tracker = _ConsecutiveFailureTracker()
+    return session._ncaa_stats_failure_tracker  # type: ignore[attr-defined]
+
+
+def request_stats_get(
+    session: requests.Session, url: str, timeout: float = 30
+) -> requests.Response | None:
+    """
+    GET a URL on stats.ncaa.org. On HTTP 500, retry once; if still 500, log, count
+    toward consecutive failures, and return None. Other status codes use raise_for_status.
+    """
+    tracker = _tracker(session)
+    resp: requests.Response | None = None
+    for _ in range(2):
+        resp = session.get(url, timeout=timeout)
+        if resp.status_code != 500:
+            break
+    assert resp is not None
+    if resp.status_code == 500:
+        print(
+            f"HTTP 500 from stats.ncaa.org after retry, skipping: {url}",
+            file=sys.stderr,
+        )
+        tracker.record_failure()
+        return None
+    resp.raise_for_status()
+    tracker.record_success()
+    return resp
 
 
 def _solve_interstitial(session: requests.Session, html: str, page_url: str) -> bool:
@@ -30,34 +87,57 @@ def _solve_interstitial(session: requests.Session, html: str, page_url: str) -> 
     i_val = int(i_match.group(1))
     pow_val = i_val + int(pow_match.group(1) + pow_match.group(2))
     token = token_match.group(1)
+    tracker = _tracker(session)
 
     try:
-        resp = session.post(
-            _VERIFY_URL,
-            json={"bm-verify": token, "pow": pow_val},
-            headers={"Content-Type": "application/json", "Referer": page_url},
-            timeout=15,
-        )
-        return resp.status_code < 400
+        resp: requests.Response | None = None
+        for _ in range(2):
+            resp = session.post(
+                _VERIFY_URL,
+                json={"bm-verify": token, "pow": pow_val},
+                headers={"Content-Type": "application/json", "Referer": page_url},
+                timeout=15,
+            )
+            if resp.status_code != 500:
+                break
+        assert resp is not None
+        if resp.status_code == 500:
+            print(
+                f"HTTP 500 from stats.ncaa.org verify POST after retry, skipping: "
+                f"{page_url}",
+                file=sys.stderr,
+            )
+            tracker.record_failure()
+            return False
+        ok = resp.status_code < 400
+        if ok:
+            tracker.record_success()
+        return ok
+    except ConsecutiveHttpFailures:
+        raise
     except Exception:
         return False
 
 
-def fetch_stats_page(session: requests.Session, url: str, timeout: float = 30) -> str:
+def fetch_stats_page(session: requests.Session, url: str, timeout: float = 30) -> str | None:
     """
     GET a stats.ncaa.org HTML page, solving Akamai interstitial if encountered.
 
+    On persistent HTTP 500 (after one retry), logs and returns None.
     Use for team pages, box scores, and other pages behind the same protection.
     """
-    resp = session.get(url, timeout=timeout)
+    resp = request_stats_get(session, url, timeout=timeout)
+    if resp is None:
+        return None
 
     if _INTERSTITIAL_SIGNAL in resp.text:
         solved = _solve_interstitial(session, resp.text, url)
         if solved:
             time.sleep(1)
-            resp = session.get(url, timeout=timeout)
+            resp = request_stats_get(session, url, timeout=timeout)
+            if resp is None:
+                return None
 
-    resp.raise_for_status()
     return resp.text
 
 
@@ -77,7 +157,9 @@ def create_session(headers: dict | None = None) -> requests.Session:
     sess.headers.update(extra)
 
     try:
-        sess.get("https://stats.ncaa.org/rankings/", timeout=10)
+        request_stats_get(sess, "https://stats.ncaa.org/rankings/", timeout=10)
+    except ConsecutiveHttpFailures:
+        raise
     except Exception:
         pass
 

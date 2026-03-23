@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 from .contest import extract_scoring_summary, fetch_box_score_page
 from .discovery import DiscoveryManager
-from .http import create_session
+from .http import ConsecutiveHttpFailures, create_session
 from .rankings import build_rankings_url, get_team_seed_entries_for_season
 from .storage import (
     SCORING_SUMMARY_DEFAULT,
@@ -84,6 +84,8 @@ def run(
             html = fetch_team_page(session, team_id)
         except requests.RequestException as e:
             print(f"  Error fetching team {team_id}: {e}")
+            continue
+        if html is None:
             continue
 
         soup = BeautifulSoup(html, "html.parser")
@@ -203,6 +205,8 @@ def run_contest(
             html = fetch_box_score_page(session, contest_id)
         except requests.RequestException as e:
             print(f"  Error fetching contest {contest_id}: {e}")
+            continue
+        if html is None:
             continue
 
         soup = BeautifulSoup(html, "html.parser")
@@ -361,6 +365,14 @@ def _build_main_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     """Entry point for CLI."""
+    try:
+        _main_cli()
+    except ConsecutiveHttpFailures as e:
+        print(str(e), file=sys.stderr)
+        sys.exit(1)
+
+
+def _main_cli() -> None:
     argv = sys.argv[1:]
 
     if not argv or argv[0] not in ("teams", "contest"):

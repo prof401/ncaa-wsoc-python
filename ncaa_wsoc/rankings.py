@@ -7,7 +7,7 @@ from urllib.parse import urlencode
 import requests
 from bs4 import BeautifulSoup
 
-from .http import create_session
+from .http import create_session, request_stats_get
 
 CHANGE_SPORT_URL = "https://stats.ncaa.org/rankings/change_sport_year_div"
 
@@ -104,8 +104,11 @@ def fetch_rankings_page(
     if session is None:
         session = create_session(headers)
 
-    resp1 = session.get(entry_url, timeout=30)
-    resp1.raise_for_status()
+    resp1 = request_stats_get(session, entry_url, timeout=30)
+    if resp1 is None:
+        raise RuntimeError(
+            f"Could not fetch rankings entry page (HTTP 500 after retry): {entry_url}"
+        )
 
     ranking_url = _extract_national_ranking_url(resp1.text, stat_seq)
     if not ranking_url:
@@ -113,7 +116,11 @@ def fetch_rankings_page(
             "Could not find national_ranking link in change_sport_year_div response"
         )
 
-    resp2 = session.get(ranking_url, timeout=30)
+    resp2 = request_stats_get(session, ranking_url, timeout=30)
+    if resp2 is None:
+        raise RuntimeError(
+            f"Could not fetch national rankings page (HTTP 500 after retry): {ranking_url}"
+        )
     return resp2
 
 

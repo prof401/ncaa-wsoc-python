@@ -12,7 +12,7 @@ from .http import fetch_stats_page
 TEAM_BASE_URL = "https://stats.ncaa.org/teams/"
 
 
-def fetch_team_page(session: requests.Session, team_id: str) -> str:
+def fetch_team_page(session: requests.Session, team_id: str) -> str | None:
     """
     Fetch the team page HTML, solving Akamai interstitial challenge if encountered.
 
@@ -21,7 +21,7 @@ def fetch_team_page(session: requests.Session, team_id: str) -> str:
         team_id: NCAA team ID.
 
     Returns:
-        Raw HTML string.
+        Raw HTML string, or None if the page returned HTTP 500 after one retry.
     """
     url = f"{TEAM_BASE_URL}{team_id}"
     return fetch_stats_page(session, url)

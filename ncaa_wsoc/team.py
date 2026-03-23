@@ -423,6 +423,9 @@ def extract_team_metadata(
     result["overall_record"] = _extract_overall_record(soup)
     result["org_id"] = _extract_team_history_org_id(soup)
 
+    if not (result["coach"] or "").strip():
+        result["coach"] = "Unknown"
+
     return result
 
 
